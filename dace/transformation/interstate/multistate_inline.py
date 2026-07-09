@@ -212,7 +212,7 @@ class InlineMultistateSDFG(transformation.SingleStateTransformation):
         allnames = set(outer_symbols.keys()) | set(sdfg.arrays.keys())
         assignments_to_replace = inner_assignments & (outer_assignments | allnames)
         sym_replacements: Dict[str, str] = {}
-        for assign in assignments_to_replace:
+        for assign in sorted(assignments_to_replace):
             newname = data.find_new_name(assign, allnames)
             allnames.add(newname)
             outer_symbols[newname] = nsdfg.symbols.get(assign, None)
