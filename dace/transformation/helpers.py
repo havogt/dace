@@ -897,13 +897,13 @@ def isolate_nested_sdfg(
 
     # We will now populate the pre state.
     pre_old_to_new_map: Dict[nodes.Node, nodes.Node] = dict()
-    for node in pre_nodes:
+    for node in sorted(pre_nodes, key=state.node_id):
         new_node = copy.deepcopy(node) if node in middle_nodes else node
         pre_old_to_new_map[node] = new_node
         pre_state.add_node(new_node)
 
     # Now add the edges, we only have to inspect the incoming ones.
-    for old_dst in pre_nodes:
+    for old_dst in sorted(pre_nodes, key=state.node_id):
         new_dst = pre_old_to_new_map[old_dst]
         for old_iedge in state.in_edges(old_dst):
             old_src = old_iedge.src
@@ -919,14 +919,14 @@ def isolate_nested_sdfg(
 
     # Now we will populate the post state.
     post_old_to_new_map: Dict[nodes.Node, nodes.Node] = dict()
-    for node in post_nodes:
+    for node in sorted(post_nodes, key=state.node_id):
         new_node = copy.deepcopy(node) if (node in middle_nodes or node in pre_nodes) else node
         post_old_to_new_map[node] = new_node
         post_state.add_node(new_node)
 
     # Now make the connections inside the post node. For this we only have to look
     #  at the outgoing edges in the original state.
-    for old_src in post_nodes:
+    for old_src in sorted(post_nodes, key=state.node_id):
         new_src = post_old_to_new_map[old_src]
         for old_oedge in state.out_edges(old_src):
             old_dst = old_oedge.dst

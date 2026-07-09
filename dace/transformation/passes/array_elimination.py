@@ -204,7 +204,7 @@ class ArrayElimination(ppl.Pass):
         removed = {1}
         while removed:
             removed = set()
-            for aname in removable_data:
+            for aname in sorted(removable_data):
                 if aname not in access_nodes:  # May be in inter-state edges
                     continue
                 for anode in access_nodes[aname]:
