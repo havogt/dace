@@ -820,7 +820,7 @@ def isolate_nested_sdfg(
     #  a backwards search starting from the nodes that serves as input to the nested
     #  SDFG. It is important that these nodes, that serves as input to the nested
     #  SDFG are also belonging to this set. But they are only added if they needed.
-    pre_nodes: Set[nodes.Node] = set()
+    found_pre_nodes: Set[nodes.Node] = set()
     to_visit: List[nodes.Node] = []
     for iedge in state.in_edges(nsdfg_node):
         input_node: nodes.AccessNode = iedge.src
@@ -833,8 +833,13 @@ def isolate_nested_sdfg(
         if node_to_process in visited:
             continue
         visited.add(node_to_process)
-        pre_nodes.add(node_to_process)
+        found_pre_nodes.add(node_to_process)
         to_visit.extend(iedge.src for iedge in state.in_edges(node_to_process))
+
+    # The nodes are inserted into the pre state below, which fixes their ids there, so the
+    #  iteration order must be reproducible. Project the search result onto the order the
+    #  nodes have in `state`; a `dict` is an insertion-ordered set with O(1) lookup.
+    pre_nodes: Dict[nodes.Node, None] = dict.fromkeys(n for n in state.nodes() if n in found_pre_nodes)
 
     # These are the nodes of the middle state. Which are all access nodes that serves
     #  as input to the nested SDFG and the nested SDFG itself.
@@ -865,26 +870,29 @@ def isolate_nested_sdfg(
     # These are the nodes that belongs to the Post State. There are two reasons why a
     #  node belongs to the set of post nodes.
     #  The first is that the node does not belong to any other set.
-    post_nodes: Set[nodes.Node] = {
+    found_post_nodes: Set[nodes.Node] = {
         node
         for node in state.nodes() if (node not in pre_nodes) and (node not in middle_nodes)
     }
 
     # The second reason, are read dependencies, for this we have to look at the incoming
     #  edges and add any node that we need.
-    if len(post_nodes) != 0:
-        for pnode in post_nodes.copy():
+    if len(found_post_nodes) != 0:
+        for pnode in list(found_post_nodes):
             for iedge in state.in_edges(pnode):
                 node: nodes.Node = iedge.src
-                if node not in post_nodes:
+                if node not in found_post_nodes:
                     if (not isinstance(node, nodes.AccessNode)) or isinstance(node.desc(state.sdfg), data.View):
                         if test_if_applicable:
                             return False
                         raise ValueError("Can not replicate non non-View AccessNodes into the post state.")
-                    post_nodes.add(node)
+                    found_post_nodes.add(node)
 
     if test_if_applicable:
         return True
+
+    # As for `pre_nodes`, iteration order fixes node ids in the post state.
+    post_nodes: Dict[nodes.Node, None] = dict.fromkeys(n for n in state.nodes() if n in found_post_nodes)
 
     # Now we are creating the two new states.
     parent_graph = state.parent_graph
