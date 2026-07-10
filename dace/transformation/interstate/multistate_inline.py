@@ -201,16 +201,21 @@ class InlineMultistateSDFG(transformation.SingleStateTransformation):
                 if b.loop_variable is not None:
                     outer_assignments.add(b.loop_variable)
 
-        inner_assignments = set()
+        # The iteration order of `inner_assignments` below decides which name each symbol is
+        #  renamed to by ``find_new_name``, so it has to be reproducible. `outer_assignments`
+        #  and `allnames` are only ever tested for membership and stay plain sets.
+        inner_assignments: Dict[str, None] = {}
         for e in nsdfg.all_interstate_edges():
-            inner_assignments |= e.data.assignments.keys()
+            inner_assignments.update(dict.fromkeys(e.data.assignments.keys()))
         for b in nsdfg.all_control_flow_blocks():
             if isinstance(b, LoopRegion):
                 if b.loop_variable is not None:
-                    inner_assignments.add(b.loop_variable)
+                    inner_assignments[b.loop_variable] = None
 
         allnames = set(outer_symbols.keys()) | set(sdfg.arrays.keys())
-        assignments_to_replace = inner_assignments & (outer_assignments | allnames)
+        assignments_to_replace = [
+            assign for assign in inner_assignments if assign in outer_assignments or assign in allnames
+        ]
         sym_replacements: Dict[str, str] = {}
         for assign in assignments_to_replace:
             newname = data.find_new_name(assign, allnames)

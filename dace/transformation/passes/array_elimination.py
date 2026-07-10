@@ -56,8 +56,14 @@ class ArrayElimination(ppl.Pass):
             return None
         for state in reversed(state_order):
             # Find all data descriptors that will no longer be used after this state
-            removable_data: Set[str] = set(
-                s for s in access_sets if state in access_sets[s] and not (access_sets[s] & reachable[state]) - {state})
+            # The order in which the data descriptors are visited below decides which redundant
+            #  copies are removed, so it has to be reproducible. `access_sets` cannot provide it:
+            #  ``FindAccessStates`` inserts some of its keys while iterating a set. Take the order
+            #  from ``sdfg.arrays`` instead, which holds every key of `access_sets` by construction.
+            removable_data: List[str] = [
+                name for name in sdfg.arrays if name in access_sets and state in access_sets[name]
+                and not (access_sets[name] & reachable[state]) - {state}
+            ]
 
             # Find duplicate access nodes as an ordered list
             access_nodes: Dict[str, List[nodes.AccessNode]] = defaultdict(list)
@@ -184,7 +190,7 @@ class ArrayElimination(ppl.Pass):
                         nodeset.remove(anode)
         return removed_nodes
 
-    def remove_redundant_copies(self, sdfg: SDFG, state: SDFGState, removable_data: Set[str],
+    def remove_redundant_copies(self, sdfg: SDFG, state: SDFGState, removable_data: List[str],
                                 access_nodes: Dict[str, List[nodes.AccessNode]]):
         """
         Removes access nodes that represent redundant copies and/or views.
