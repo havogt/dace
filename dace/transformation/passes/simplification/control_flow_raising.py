@@ -6,6 +6,7 @@ import warnings
 
 import networkx as nx
 import sympy
+from ordered_set import OrderedSet
 
 from dace import properties
 from dace.frontend.python import astutils
@@ -183,7 +184,14 @@ class ControlFlowRaising(ppl.Pass):
                             graph.remove_edge(oe)
                             continue
 
-                        branch_nodes = set(dfs_conditional(graph, [oe.dst], lambda _, x: x is not merge_block))
+                        # `dfs_conditional` yields a deterministic depth-first ordering, and this
+                        # order decides the order the branch's nodes and edges are re-added in
+                        # below. Control flow blocks do not override `__hash__`, so collecting
+                        # them into a plain `set` orders them by `id()`, which varies between
+                        # processes. `all_edges` below already uses an `OrderedSet`, but that only
+                        # preserves the order it is given, so the ordering has to be kept here.
+                        branch_nodes = OrderedSet(
+                            dfs_conditional(graph, [oe.dst], lambda _, x: x is not merge_block))
                         branch_start = branch.add_state(branch_name + '_start', is_start_block=True)
                         branch.add_nodes_from(branch_nodes)
                         branch.add_edge(branch_start, oe.dst, InterstateEdge(assignments=oe.data.assignments))

@@ -188,7 +188,41 @@ def test_unstructured_control_flow_sibling_loops():
     assert np.allclose(B_test, B_valid)
 
 
+def test_raised_branch_preserves_dfs_order():
+    """The blocks of a raised branch must keep the depth-first order they are found in.
+
+    They used to be collected into a plain `set`, which orders control flow blocks by
+    `id()` and therefore differently in every process. That order reaches the emitted
+    SDFG through `add_nodes_from` and the edge re-insertion below it, so two identical
+    lowerings could serialize differently and hash differently.
+
+    The chain is long enough that the old behaviour cannot plausibly match by chance.
+    """
+    sdfg = dace.SDFG('raised_branch_order')
+    sdfg.add_symbol('i', dace.int64)
+    guard = sdfg.add_state('guard', is_start_block=True)
+    merge = sdfg.add_state('merge')
+
+    chain = [sdfg.add_state(f'branch_block_{n}') for n in range(8)]
+    sdfg.add_edge(guard, chain[0], dace.InterstateEdge(condition='i < 10'))
+    for src, dst in zip(chain, chain[1:]):
+        sdfg.add_edge(src, dst, dace.InterstateEdge())
+    sdfg.add_edge(chain[-1], merge, dace.InterstateEdge())
+    sdfg.add_edge(guard, merge, dace.InterstateEdge(condition='not (i < 10)'))
+
+    FixedPointPipeline([ControlFlowRaising()]).apply_pass(sdfg, {})
+
+    conditionals = [b for b in sdfg.all_control_flow_blocks() if isinstance(b, ConditionalBlock)]
+    assert len(conditionals) == 1
+    taken_branch = next(region for _, region in conditionals[0].branches
+                        if any(b.label.startswith('branch_block_') for b in region.nodes()))
+
+    order = [b.label for b in taken_branch.nodes() if b.label.startswith('branch_block_')]
+    assert order == [b.label for b in chain]
+
+
 if __name__ == '__main__':
+    test_raised_branch_preserves_dfs_order()
     test_dataflow_if_check(False)
     test_dataflow_if_check(True)
     test_nested_if_chain(False)
