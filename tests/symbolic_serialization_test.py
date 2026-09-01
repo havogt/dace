@@ -61,6 +61,55 @@ def test_range_json_roundtrip_uses_symbolic_deserializer():
     assert tile.dtype == dace.uint8
 
 
+def test_floordiv_roundtrip_preserves_the_integer_assumption():
+    """``//`` parses to ``__int_floor``, whose name a class body cannot spell.
+
+    The deserializer's function table therefore used to miss it and rebuilt the node as an
+    undefined function, dropping ``is_integer``. Every assumption-driven simplification then
+    stopped firing on a deserialized expression.
+    """
+    expr = symbolic.pystr_to_symbolic('N // 2')
+    assert expr.is_integer
+
+    restored = symbolic.deserialize_symbolic(symbolic.serialize_symbolic(expr))
+
+    assert not isinstance(restored, sympy.core.function.AppliedUndef)
+    assert restored.func is symbolic.pystr_to_symbolic('N // 2').func
+    assert restored.is_integer
+    assert restored.is_real
+    assert restored.is_finite
+
+
+def test_ceiling_of_a_floordiv_collapses_after_a_roundtrip():
+    """``ceiling`` of an integer is the identity, and must stay so once deserialized.
+
+    ``Range.size()`` wraps its extent in ``ceiling``; without the integer assumption the wrapper
+    survived into code generation as a double-returning ``ceil`` call.
+    """
+    restored = symbolic.deserialize_symbolic(symbolic.serialize_symbolic(symbolic.pystr_to_symbolic('N // 2')))
+
+    assert sympy.ceiling(restored) == restored
+    assert 'ceil' not in sym2cpp(sympy.ceiling(restored))
+
+
+def test_range_with_a_floordiv_bound_survives_a_json_roundtrip():
+    """A range must stay equal to itself across serialization.
+
+    Losing the assumption left ``size()`` wrapped in a ``ceiling`` the original did not have, so
+    the two ranges no longer covered one another and reported different volumes.
+    """
+    end = symbolic.pystr_to_symbolic('N // 2')
+    rng = subsets.Range([(symbolic.pystr_to_symbolic('M'), end - 1, 1)])
+
+    restored = subsets.Range.from_json(rng.to_json(), {"version": dace.__version__})
+
+    assert sympy.simplify(rng.size()[0] - restored.size()[0]) == 0
+    assert rng.num_elements() == restored.num_elements()
+    assert rng.covers(restored)
+    assert restored.covers(rng)
+    assert 'ceil' not in sym2cpp(restored.size()[0])
+
+
 def test_symstr_codegen_for_typed_constants():
     expr = symbolic.deserialize_symbolic('2i16 + $N')
 

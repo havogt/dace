@@ -1083,6 +1083,11 @@ class __int_floor(int_floor):
     pass
 
 
+# Private-name mangling rewrites ``__int_floor`` to ``_<Class>__int_floor`` inside any
+# class body, so the deserializer's function table cannot name the class directly.
+_int_floor_operator = __int_floor
+
+
 class int_ceil(sympy.Function):
 
     @classmethod
@@ -1894,6 +1899,7 @@ class _SerializedSymbolicParser(ast.NodeVisitor):
         'Lt': sympy.Lt,
         'Le': sympy.Le,
         'int_floor': int_floor,
+        '__int_floor': _int_floor_operator,
         'int_ceil': int_ceil,
         'IfExpr': IfExpr,
         'Mod': sympy.Mod,
@@ -2423,7 +2429,13 @@ class DaceSympyPrinter(sympy.printing.str.StrPrinter):
     def _print_ceiling(self, expr):
         if not self.cpp_mode:
             return super()._print_Function(expr)
-        return 'ceil(%s)' % self._print(expr.args[0])
+        arg = expr.args[0]
+        # ``ceil`` is the libm overload and returns a double, which is not a valid
+        # bound for an OpenMP canonical loop. Rounding an integer up is the identity,
+        # so the argument keeps both the value and the integer type.
+        if arg.is_integer:
+            return self._print(arg)
+        return 'ceil(%s)' % self._print(arg)
 
     def _print_Mod(self, expr):
         return '((%s) %% (%s))' % (self._print(expr.args[0]), self._print(expr.args[1]))

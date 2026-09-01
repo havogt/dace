@@ -9,7 +9,8 @@ folded back to ``N``. Both functions now share the unit-denominator and exact-di
 import pytest
 import sympy
 
-from dace.symbolic import int_ceil, int_floor, pystr_to_symbolic, symstr, sympy_intdiv_fix
+from dace.symbolic import (deserialize_symbolic, int_ceil, int_floor, pystr_to_symbolic, symstr,
+                           sympy_intdiv_fix)
 
 N = pystr_to_symbolic('N')
 M = pystr_to_symbolic('M')
@@ -56,6 +57,21 @@ def test_rounding_of_a_non_integer_expression_lowers_to_the_math_call(rounding, 
     """The kept rounding must reach C++ as the matching math-library call."""
     x = pystr_to_symbolic('x')
     assert symstr(rounding(sympy.sin(x)), cpp_mode=True) == '(%s(sin(x)))' % call
+
+
+def test_ceiling_of_an_integer_does_not_reach_libm():
+    """``ceil`` returns a double, which OpenMP rejects as a loop bound.
+
+    Deserialization rebuilds an application through ``Basic.__new__``, bypassing the ``eval``
+    that would have folded the wrapper away, so a stored range endpoint hands the printer a
+    ``ceiling`` over an integer. Rounding an integer up is the identity, so the argument stands
+    on its own and keeps the integer type a canonical loop form needs.
+    """
+    stored = deserialize_symbolic('ceiling(__int_floor($N, 2))')
+    assert isinstance(stored, sympy.ceiling)
+    assert stored.args[0].is_integer
+
+    assert symstr(stored, cpp_mode=True) == '(((N) / (2)))'
 
 
 @pytest.mark.parametrize('rounding,name', [(sympy.floor, 'int_floor'), (sympy.ceiling, 'int_ceil')])
