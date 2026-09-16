@@ -9,7 +9,7 @@ import functools
 import itertools
 import warnings
 from collections import deque
-from typing import TYPE_CHECKING, List, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 import sympy
 from sympy import Symbol, ceiling
@@ -1278,7 +1278,7 @@ def propagate_memlets_nested_sdfg(parent_sdfg: 'SDFG', parent_state: 'SDFGState'
     })
 
     sdfg = nsdfg_node.sdfg
-    outer_symbols = parent_state.symbols_defined_at(nsdfg_node)
+    outer_symbols = _symbols_defined_at(parent_state, nsdfg_node)
 
     # Collect contributions from top-level CFG blocks. Plain states contribute
     # directly, while control-flow regions aggregate their child blocks via
@@ -1380,6 +1380,42 @@ def reset_state_annotations(sdfg: 'SDFG'):
         state.ranges = {}
 
 
+#: SDFG-wide symbols of the SDFGs seen by the running propagation, see `_reuse_sdfg_wide_symbols()`.
+_sdfg_wide_symbols: Optional[Dict[int, Dict[str, dtypes.typeclass]]] = None
+
+
+def _reuses_sdfg_wide_symbols(propagation_function):
+    """Resolve the node-independent symbols of `symbols_defined_at()` once per SDFG.
+
+    Propagation rewrites Memlets; the SDFG symbols, the data descriptors and the inter-state edges
+    that define those symbols stay as they are, so one result serves every Memlet of a run.
+    """
+
+    @functools.wraps(propagation_function)
+    def wrapper(*args, **kwargs):
+        global _sdfg_wide_symbols
+        if _sdfg_wide_symbols is not None:  # An outer propagation already holds the symbols.
+            return propagation_function(*args, **kwargs)
+        _sdfg_wide_symbols = {}
+        try:
+            return propagation_function(*args, **kwargs)
+        finally:
+            _sdfg_wide_symbols = None
+
+    return wrapper
+
+
+def _symbols_defined_at(state: 'SDFGState', node: nodes.Node) -> Dict[str, dtypes.typeclass]:
+    if _sdfg_wide_symbols is None:
+        return state.symbols_defined_at(node)
+    sdfg_wide = _sdfg_wide_symbols.get(id(state.sdfg))
+    if sdfg_wide is None:
+        sdfg_wide = state.sdfg_wide_symbols()
+        _sdfg_wide_symbols[id(state.sdfg)] = sdfg_wide
+    return state.symbols_defined_at(node, sdfg_wide_symbols=sdfg_wide)
+
+
+@_reuses_sdfg_wide_symbols
 def propagate_memlets_sdfg(sdfg: 'SDFG'):
     """ Propagates memlets throughout an entire given SDFG.
 
@@ -1394,6 +1430,7 @@ def propagate_memlets_sdfg(sdfg: 'SDFG'):
     propagate_states(sdfg)
 
 
+@_reuses_sdfg_wide_symbols
 def propagate_memlets_state(sdfg: 'SDFG', state: 'SDFGState'):
     """ Propagates memlets throughout one SDFG state.
 
@@ -1438,6 +1475,7 @@ def propagate_memlets_state(sdfg: 'SDFG', state: 'SDFGState'):
     propagate_memlets_scope(sdfg, state, state.scope_leaves())
 
 
+@_reuses_sdfg_wide_symbols
 def propagate_memlets_scope(sdfg, state, scopes, propagate_entry=True, propagate_exit=True):
     """
     Propagate memlets from the given scopes outwards.
@@ -1479,6 +1517,7 @@ def propagate_memlets_scope(sdfg, state, scopes, propagate_entry=True, propagate
         next_scopes = set()
 
 
+@_reuses_sdfg_wide_symbols
 def propagate_memlets_map_scope(sdfg: 'SDFG', state: 'SDFGState', map_entry: nodes.MapEntry) -> None:
     """Propagate Memlets from the given Map outside.
 
@@ -1608,7 +1647,7 @@ def propagate_memlet(dfg_state,
     sdfg = dfg_state.parent
     scope_node_symbols = set(conn for conn in entry_node.in_connectors if not conn.startswith('IN_'))
     defined_vars = [
-        symbolic.pystr_to_symbolic(s) for s in (dfg_state.symbols_defined_at(entry_node).keys()
+        symbolic.pystr_to_symbolic(s) for s in (_symbols_defined_at(dfg_state, entry_node).keys()
                                                 | sdfg.constants.keys()) if s not in scope_node_symbols
     ]
 
