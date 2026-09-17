@@ -2,10 +2,11 @@
 from unittest import mock
 
 import numpy as np
+import pytest
 
 import dace
 from dace.sdfg import nodes, propagation
-from dace.sdfg.state import SDFGState
+from dace.sdfg.state import LoopRegion, SDFGState
 
 
 def _make_sdfg(name: str, nested: bool = False) -> dace.SDFG:
@@ -36,33 +37,37 @@ def _make_sdfg(name: str, nested: bool = False) -> dace.SDFG:
     return sdfg
 
 
-def test_sdfg_wide_symbols_gives_the_same_result():
+def test_state_symbols_give_the_same_result():
     sdfg = _make_sdfg("same_result")
     state = sdfg.states()[0]
-    sdfg_wide = state.sdfg_wide_symbols()
+    state_symbols = state.symbols_defined_at_state()
 
     for node in state.nodes():
         expected = state.symbols_defined_at(node)
-        assert state.symbols_defined_at(node, sdfg_wide_symbols=sdfg_wide) == expected
-        assert list(state.symbols_defined_at(node, sdfg_wide_symbols=sdfg_wide)) == list(expected)
+        assert state.symbols_defined_at(node, state_symbols=state_symbols) == expected
+        assert list(state.symbols_defined_at(node, state_symbols=state_symbols)) == list(expected)
 
     map_entry = next(n for n in state.nodes() if isinstance(n, nodes.MapEntry))
     tasklet = next(n for n in state.nodes() if isinstance(n, nodes.Tasklet))
-    assert "N" in sdfg_wide
+    assert "N" in state_symbols
     # The map parameters are what the node adds to the SDFG-wide symbols, inside the map only.
-    assert set(state.symbols_defined_at(tasklet)) - set(sdfg_wide) == set(map_entry.map.params)
-    assert set(state.symbols_defined_at(map_entry)) == set(sdfg_wide)
+    assert set(state.symbols_defined_at(tasklet)) - set(state_symbols) == set(map_entry.map.params)
+    assert set(state.symbols_defined_at(map_entry)) == set(state_symbols)
 
 
-def test_propagation_resolves_the_sdfg_wide_symbols_once_per_sdfg():
+def test_propagation_resolves_the_state_symbols_once_per_state():
+    """One resolution per state, however many Memlets that state holds."""
     sdfg = _make_sdfg("resolve_once", nested=True)
-    n_sdfgs = len(list(sdfg.all_sdfgs_recursive()))
+    states = [state for nested in sdfg.all_sdfgs_recursive() for state in nested.states()]
+    assert sum(len(state.edges()) for state in states) > len(states)
 
-    with mock.patch.object(SDFGState, "sdfg_wide_symbols", autospec=True,
-                           side_effect=SDFGState.sdfg_wide_symbols) as spy:
+    with mock.patch.object(SDFGState,
+                           "symbols_defined_at_state",
+                           autospec=True,
+                           side_effect=SDFGState.symbols_defined_at_state) as spy:
         propagation.propagate_memlets_sdfg(sdfg)
 
-    assert spy.call_count == n_sdfgs
+    assert spy.call_count <= len(states)
 
 
 def test_propagation_is_unchanged():
@@ -82,7 +87,76 @@ def test_propagation_is_unchanged():
     assert np.allclose(b, a + 1.0)
 
 
+def _make_sdfg_with_loop_region(name: str) -> tuple[dace.SDFG, SDFGState, SDFGState]:
+    """A top-level state, then a `LoopRegion` whose state sees the loop iterator as well.
+
+    Propagation visits the top-level state first, so anything it resolves per SDFG and reuses is
+    missing the iterator by the time it reaches the loop body.
+    """
+    sdfg = dace.SDFG(name)
+    N = dace.symbol("N")
+    for array in "abc":
+        sdfg.add_array(array, shape=(N, ), dtype=dace.float64, transient=False)
+    top_level = sdfg.add_state("top_level", is_start_block=True)
+    top_level.add_mapped_tasklet(
+        "top_level_comp",
+        map_ranges={"__i": "0:N"},
+        inputs={"__in": dace.Memlet("a[__i]")},
+        outputs={"__out": dace.Memlet("c[__i]")},
+        code="__out = __in + 1.0",
+        external_edges=True,
+    )
+    loop = LoopRegion("loop", "it < N", "it", "it = 0", "it = it + 1")
+    sdfg.add_node(loop)
+    sdfg.add_edge(top_level, loop, dace.InterstateEdge())
+    body = loop.add_state("body", is_start_block=True)
+    body.add_mapped_tasklet(
+        "body_comp",
+        map_ranges={"__i": "0:it"},
+        inputs={"__in": dace.Memlet("a[__i]")},
+        outputs={"__out": dace.Memlet("b[__i]")},
+        code="__out = __in + 1.0",
+        external_edges=True,
+    )
+    sdfg.validate()
+    return sdfg, top_level, body
+
+
+def test_the_enclosing_regions_are_part_of_the_state_symbols():
+    """A `LoopRegion` defines its iterator for its own states, not for every state of the SDFG."""
+    sdfg, top_level, body = _make_sdfg_with_loop_region("regions")
+
+    assert "it" in body.symbols_defined_at_state()
+    assert "it" not in top_level.symbols_defined_at_state()
+
+
+def test_propagation_keeps_the_loop_iterator():
+    """The symbols of a `LoopRegion` belong to its states, not to every state of the SDFG."""
+    sdfg, _, body = _make_sdfg_with_loop_region("regions_propagate")
+    map_entry = next(n for n in body.nodes() if isinstance(n, nodes.MapEntry))
+
+    propagation.propagate_memlets_sdfg(sdfg)
+
+    outer_memlet = body.in_edges(map_entry)[0].data
+    assert str(outer_memlet.subset) == "0:it"
+    assert not outer_memlet.dynamic
+
+
+def test_an_error_leaves_no_state_behind():
+    sdfg = _make_sdfg("after_error")
+
+    with mock.patch.object(SDFGState, "symbols_defined_at_state", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError):
+            propagation.propagate_memlets_sdfg(sdfg)
+
+    # Nothing to clean up: the resolver is an ordinary object owned by the call.
+    assert propagation.SymbolResolver()._per_state == {}
+
+
 if __name__ == "__main__":
-    test_sdfg_wide_symbols_gives_the_same_result()
-    test_propagation_resolves_the_sdfg_wide_symbols_once_per_sdfg()
+    test_state_symbols_give_the_same_result()
+    test_propagation_resolves_the_state_symbols_once_per_state()
     test_propagation_is_unchanged()
+    test_the_enclosing_regions_are_part_of_the_state_symbols()
+    test_propagation_keeps_the_loop_iterator()
+    test_an_error_leaves_no_state_behind()

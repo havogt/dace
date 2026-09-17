@@ -1615,11 +1615,11 @@ class SDFGState(OrderedMultiDiConnectorGraph[nd.Node, mm.Memlet], ControlFlowBlo
                     pass
         return result
 
-    def sdfg_wide_symbols(self) -> Dict[str, dtypes.typeclass]:
+    def sdfg_symbols(self) -> Dict[str, dtypes.typeclass]:
         """
-        Returns the symbols that are available to every node of the SDFG, i.e. the part of
-        ``symbols_defined_at()`` that does not depend on the node: the SDFG symbols, the free
-        symbols of its data descriptors and the symbols defined on the inter-state edges.
+        Returns the symbols of the SDFG this state belongs to: its own symbols and the free symbols
+        of its data descriptors. The same for every state of that SDFG, and the expensive part of
+        ``symbols_defined_at_state()``, which is why it can be resolved separately.
 
         :return: A dictionary mapping symbol names to their types.
         """
@@ -1627,10 +1627,31 @@ class SDFGState(OrderedMultiDiConnectorGraph[nd.Node, mm.Memlet], ControlFlowBlo
 
         sdfg: SDFG = self.sdfg
 
-        # Start with global symbols
         symbols = collections.OrderedDict(sdfg.symbols)
         for desc in sdfg.arrays.values():
             symbols.update([(str(s), s.dtype) for s in desc.free_symbols])
+
+        return symbols
+
+    def symbols_defined_at_state(self,
+                                 *,
+                                 sdfg_symbols: Optional[Dict[str,
+                                                             dtypes.typeclass]] = None) -> Dict[str, dtypes.typeclass]:
+        """
+        Returns the symbols available to every node of this state, i.e. the part of
+        ``symbols_defined_at()`` that does not depend on the node: the symbols of the SDFG, the
+        ones defined on the inter-state edges and the ones the enclosing control flow regions
+        define.
+
+        :param sdfg_symbols: The result of ``sdfg_symbols()``, for callers that resolve several
+                             states of one SDFG; it is computed here if not given.
+        :return: A dictionary mapping symbol names to their types.
+        """
+        from dace.sdfg.sdfg import SDFG
+
+        sdfg: SDFG = self.sdfg
+
+        symbols = collections.OrderedDict(self.sdfg_symbols() if sdfg_symbols is None else sdfg_symbols)
 
         # Add symbols from inter-state edges along the path to the state
         try:
@@ -1645,10 +1666,10 @@ class SDFGState(OrderedMultiDiConnectorGraph[nd.Node, mm.Memlet], ControlFlowBlo
 
         return symbols
 
-    def symbols_defined_at(
-            self,
-            node: nd.Node,
-            sdfg_wide_symbols: Optional[Dict[str, dtypes.typeclass]] = None) -> Dict[str, dtypes.typeclass]:
+    def symbols_defined_at(self,
+                           node: nd.Node,
+                           *,
+                           state_symbols: Optional[Dict[str, dtypes.typeclass]] = None) -> Dict[str, dtypes.typeclass]:
         """
         Returns all symbols available to a given node.
         The symbols a node can access are a combination of the global SDFG
@@ -1656,9 +1677,9 @@ class SDFGState(OrderedMultiDiConnectorGraph[nd.Node, mm.Memlet], ControlFlowBlo
         and symbols defined in scope entries in the path to this node.
 
         :param node: The given node.
-        :param sdfg_wide_symbols: The result of ``sdfg_wide_symbols()``, for callers that resolve
-                                  many nodes while the SDFG symbols and data descriptors do not
-                                  change; it is computed here if not given.
+        :param state_symbols: The result of ``symbols_defined_at_state()`` of this state, for
+                              callers that resolve many nodes while the SDFG does not change; it is
+                              computed here if not given.
         :return: A dictionary mapping symbol names to their types.
         """
         from dace.sdfg.sdfg import SDFG
@@ -1668,7 +1689,7 @@ class SDFGState(OrderedMultiDiConnectorGraph[nd.Node, mm.Memlet], ControlFlowBlo
 
         sdfg: SDFG = self.sdfg
 
-        symbols = collections.OrderedDict(self.sdfg_wide_symbols() if sdfg_wide_symbols is None else sdfg_wide_symbols)
+        symbols = collections.OrderedDict(self.symbols_defined_at_state() if state_symbols is None else state_symbols)
 
         # Find scopes this node is situated in
         sdict = self.scope_dict()
