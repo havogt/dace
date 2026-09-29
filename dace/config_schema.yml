@@ -447,6 +447,18 @@ required:
                             property of their map to False.
                         default: 0
 
+                    grid_order_second_dim_first:
+                        type: bool
+                        title: Schedule the thread-blocks of 2D grids along the second dimension first
+                        description: >
+                            For kernels with a two dimensional grid, remap the linear thread-block index so
+                            that consecutively scheduled thread-blocks step through the second grid dimension
+                            (the second map dimension from the right) before the first one. The grid and the
+                            mapping of threads inside a block are unchanged. For a map over (level, horizontal)
+                            this makes the blocks that cover all levels of the same horizontal points run
+                            together, so data that depends only on the horizontal index stays in cache.
+                        default: false
+
                     dynamic_map_block_size:
                         type: str
                         title: Thread-Block size for GPU_ThreadBlock_Dynamic

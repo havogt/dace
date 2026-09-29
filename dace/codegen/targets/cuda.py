@@ -2457,13 +2457,23 @@ gpuError_t __err = {backend}LaunchKernel((void*){kname}, dim3({gdims}), dim3({bd
         # do not generate an index if the kernel map is persistent
         chiplet_count = self._kernel_chiplet_count
         chiplet_chunk = self._kernel_chiplet_chunk
+        second_dim_first = (len(krange) == 2 and chiplet_count <= 1 and all(g == 1 for g in grid_dims[2:])
+                            and Config.get_bool('compiler', 'cuda', 'grid_order_second_dim_first'))
         if node.map.schedule != dtypes.ScheduleType.GPU_Persistent:
             # First three dimensions are evaluated directly
             for i in range(min(len(krange), 3)):
                 varname = kernel_map.params[-i - 1]
                 index_type = index_types[varname]
 
-                if chiplet_count > 1 and i == 0:
+                if second_dim_first:
+                    # Linear block index ``f = blockIdx.x + gridDim.x * blockIdx.y``, decomposed with the
+                    # second grid dimension varying fastest
+                    linear = '(%s + %s * %s)' % (_widen_register('blockIdx.x', index_type),
+                                                 _widen_register('gridDim.x', index_type),
+                                                 _widen_register('blockIdx.y', index_type))
+                    ydim = _widen_register('gridDim.y', index_type)
+                    block_expr = ('(%s / %s)' if i == 0 else '(%s %% %s)') % (linear, ydim)
+                elif chiplet_count > 1 and i == 0:
                     # Contiguous partitioning: the chiplet of a block is ``blockIdx.x % chiplets`` and its
                     # slot within that chiplet is ``blockIdx.x / chiplets``, so chiplet k owns the blocks
                     # [k * chunk .. (k + 1) * chunk - 1] of this dimension (see ``get_kernel_dimensions``)
