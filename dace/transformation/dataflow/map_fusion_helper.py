@@ -1,6 +1,6 @@
 # Copyright 2019-2025 ETH Zurich and the DaCe authors. All rights reserved.
 import copy
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import dace
 from dace import symbolic
@@ -345,6 +345,34 @@ def relocate_nodes(
     assert len(from_node.out_connectors) == 0
 
 
+def _topological_index(graph: dace.SDFGState) -> Optional[Dict[nodes.Node, int]]:
+    """Returns the position of every node of `graph` in a topological order.
+
+    The result is cached on the state and dropped together with its scope caches,
+    i.e. whenever a node or an edge is added or removed. Returns `None` if `graph`
+    does not support the cache or is not acyclic.
+    """
+    if not isinstance(graph, dace.SDFGState):
+        return None
+    cached = graph.__dict__.get('_topological_index_cached')
+    if cached is not None:
+        return cached
+    in_degree = {node: graph.in_degree(node) for node in graph.nodes()}
+    ready = [node for node, degree in in_degree.items() if degree == 0]
+    index: Dict[nodes.Node, int] = {}
+    while ready:
+        node = ready.pop()
+        index[node] = len(index)
+        for edge in graph.out_edges(node):
+            in_degree[edge.dst] -= 1
+            if in_degree[edge.dst] == 0:
+                ready.append(edge.dst)
+    if len(index) != len(in_degree):
+        return None
+    graph._topological_index_cached = index
+    return index
+
+
 def is_node_reachable_from(
     graph: dace.SDFGState,
     begin: nodes.Node,
@@ -361,8 +389,13 @@ def is_node_reachable_from(
     :param end: The node that should be located.
     """
 
-    def next_nodes(node: nodes.Node) -> Iterable[nodes.Node]:
-        return (edge.dst for edge in graph.out_edges(node))
+    topological_index = _topological_index(graph)
+    if topological_index is None:
+        max_index = None
+    elif end not in topological_index:
+        return False
+    else:
+        max_index = topological_index[end]
 
     to_visit: List[nodes.Node] = [begin]
     seen: Set[nodes.Node] = set()
@@ -372,8 +405,10 @@ def is_node_reachable_from(
         if node == end:
             return True
         elif node not in seen:
-            to_visit.extend(next_nodes(node))
-        seen.add(node)
+            seen.add(node)
+            for edge in graph.out_edges(node):
+                if max_index is None or topological_index[edge.dst] <= max_index:
+                    to_visit.append(edge.dst)
 
     # We never found `end`
     return False
