@@ -548,6 +548,7 @@ class DataflowGraphView(BlockGraphView, abc.ABC):
         self._scope_dict_tochildren_cached = None
         self._scope_tree_cached = None
         self._scope_leaves_cached = None
+        self._topological_index_cached = None
 
     def scope_tree(self) -> Dict[Union[None, nd.Node], 'dace.sdfg.scope.ScopeTree']:
         """Get the scope trees.

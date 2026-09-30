@@ -7,7 +7,7 @@ import uuid
 import networkx as nx
 from dace.dtypes import deduplicate
 import dace.serialize
-from typing import Any, Callable, Generic, Iterable, List, Optional, Sequence, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, Iterable, List, Optional, Sequence, Tuple, TypeVar, Union
 from ordered_set import OrderedSet
 
 
@@ -667,21 +667,36 @@ class OrderedDiGraph(Graph[NodeT, EdgeT], Generic[NodeT, EdgeT]):
     def nx(self):
         return self._nx
 
+    def _node_index(self) -> Tuple[List[NodeT], Dict[int, int]]:
+        """Returns the nodes in order and a map from `id()` of a node to its position.
+
+        The index is rebuilt when a node was added or removed, `_nodes` was replaced, or the
+        graph is a copy of the graph for which the index was built (the positions are keyed by
+        `id()` of the nodes, which a copy of the index would still refer to).
+        """
+        cache = self.__dict__.get('_node_index_cache')
+        version = self.__dict__.get('_node_index_version', 0)
+        if cache is None or cache[0] != id(self) or cache[1] is not self._nodes or cache[2] != version:
+            ordered_nodes = list(self._nodes.keys())
+            cache = (id(self), self._nodes, version, ordered_nodes, {id(n): i for i, n in enumerate(ordered_nodes)})
+            self._node_index_cache = cache
+        return cache[3], cache[4]
+
+    def _invalidate_node_index(self):
+        self._node_index_version = self.__dict__.get('_node_index_version', 0) + 1
+
     def node(self, id: int) -> NodeT:
-        try:
-            if id >= 0:
-                # Same result as the scan below, without a Python-level loop over the nodes
-                return next(itertools.islice(self._nodes.keys(), id, None))
-            else:
-                return next(n for i, n in enumerate(self._nodes.keys()) if i == id)
-        except StopIteration:
+        ordered_nodes, _ = self._node_index()
+        if id < 0 or id >= len(ordered_nodes):
             raise NodeNotFoundError
+        return ordered_nodes[id]
 
     def node_id(self, node: NodeT) -> int:
-        try:
-            return next(i for i, n in enumerate(self._nodes.keys()) if n is node)
-        except StopIteration:
+        ordered_nodes, positions = self._node_index()
+        pos = positions.get(id(node))
+        if pos is None or ordered_nodes[pos] is not node:
             raise NodeNotFoundError(node)
+        return pos
 
     def nodes(self) -> List[NodeT]:
         return list(self._nodes.keys())
@@ -699,6 +714,7 @@ class OrderedDiGraph(Graph[NodeT, EdgeT], Generic[NodeT, EdgeT]):
         if node in self._nodes:
             raise RuntimeError("Duplicate node added")
         self._nodes[node] = (OrderedDict(), OrderedDict())
+        self._invalidate_node_index()
         self._nx.add_node(node)
 
     def add_edge(self, src: NodeT, dst: NodeT, data: EdgeT = None):
@@ -721,6 +737,7 @@ class OrderedDiGraph(Graph[NodeT, EdgeT], Generic[NodeT, EdgeT]):
             for edge in self.all_edges(node):
                 self.remove_edge(edge)
             del self._nodes[node]
+            self._invalidate_node_index()
             self._nx.remove_node(node)
         except KeyError:
             pass
